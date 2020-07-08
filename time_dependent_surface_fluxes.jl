@@ -26,12 +26,11 @@ const day = Oceananigans.Utils.day
 const f = 1e-4
 const τ = 1e-4
 const Qᵇ₀ = 1e-8
+N² = 1e-5
 
 Qᵇ(x, y, t) = Qᵇ₀ * (1 + cos(2π/day * t))
 Qᵘ(x, y, t) =   τ * cos(2π * f * t)
 Qᵛ(x, y, t) = - τ * sin(2π * f * t)
-
-N² = 1e-5
 
 b_bcs = TracerBoundaryConditions(grid, top = TracerBoundaryCondition(Flux, :z, Qᵇ),
                                        bottom = BoundaryCondition(Gradient, N²))
@@ -43,11 +42,11 @@ v_bcs = VVelocityBoundaryConditions(grid, top = VVelocityBoundaryCondition(Flux,
 
 using Oceananigans.Utils: hour, minute
 
-const p₀ = 1
-
 @inline sunlight(z) = exp(z / 24)
+
 const growth_rate = 1 / day
 const mortality_rate = 1 / day
+const p₀ = 1
 
 @inline function growth_and_death(i, j, k, grid, clock, state) 
     p = @inbounds state.tracers.plankton[i, j, k]
