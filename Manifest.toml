@@ -756,8 +756,8 @@ version = "0.1.3"
 
 [[Oceananigans]]
 deps = ["Adapt", "CUDA", "Dates", "FFTW", "GPUifyLoops", "JLD2", "LinearAlgebra", "Logging", "NCDatasets", "OffsetArrays", "OrderedCollections", "Printf", "Random", "SeawaterPolynomials", "Statistics"]
-git-tree-sha1 = "a984b8c8b4462c56970722966bce0986ddd15bc9"
-repo-rev = "master"
+git-tree-sha1 = "43d0189080223cc284a225c00e0d8e1bbfcfb8ff"
+repo-rev = "glw/better-hascuda"
 repo-url = "https://github.com/CliMA/Oceananigans.jl.git"
 uuid = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
 version = "0.30.0"
