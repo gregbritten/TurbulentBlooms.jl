@@ -1,7 +1,8 @@
-# # Windy convection with surface waves
+# # Time-dependent surface fluxes with plankton
 
-# This script runs a simulation of ocean turbulence driven by both convection
-# and wind in the presence of surface waves.
+# This script runs a simulation of ocean turbulence driven by time-dependent 
+# surface fluxes of buoyancy and momentum, with a plankton-like tracer and
+# in the presence of surface waves.
 
 using Oceananigans, Random, Printf, Statistics
 
