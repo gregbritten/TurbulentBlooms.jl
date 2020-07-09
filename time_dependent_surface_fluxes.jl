@@ -4,6 +4,10 @@
 # surface fluxes of buoyancy and momentum, with a plankton-like tracer and
 # in the presence of surface waves.
 
+using Pkg
+
+Pkg.activate(@__DIR__)
+
 using Oceananigans, Random, Printf, Statistics
 
 # # Set up the model

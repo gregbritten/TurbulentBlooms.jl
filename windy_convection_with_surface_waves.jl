@@ -3,6 +3,10 @@
 # This script runs a simulation of ocean turbulence driven by both convection
 # and wind in the presence of surface waves.
 
+using Pkg
+
+Pkg.activate(@__DIR__)
+
 using Random, Printf, Statistics
 
 # # Set up the model
