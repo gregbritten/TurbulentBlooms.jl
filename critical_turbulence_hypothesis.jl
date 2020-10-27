@@ -21,7 +21,8 @@ Lz = 128
 Qʰ = 100  # W m⁻², surface _heat_ flux
 ρₒ = 1026 # kg m⁻³, average density at the surface of the world ocean
 cᴾ = 3991 # J K⁻¹ s⁻¹, typical heat capacity for seawater
-N∞ = 9.5e-3 # s⁻¹, initial buoyancy frequency
+#N∞ = 9.5e-3 # s⁻¹, initial buoyancy frequency
+N∞ = 1e-3 # s⁻¹, initial buoyancy frequency
 
 surface_temperature_flux_parameters = (
                                        transition_time = 1day,
@@ -31,7 +32,7 @@ surface_temperature_flux_parameters = (
 plankton_forcing_parameters = (
                                surface_growth_rate = 1/day,
                                sunlight_attenuation_length = 5.0,
-                               mortality_rate = 0.1/day,
+                               mortality_rate = 0.1/day
                               )
                            
 # Setup
@@ -45,7 +46,7 @@ buoyancy = SeawaterBuoyancy(equation_of_state=LinearEquationOfState(α=2e-4), co
 α = buoyancy.equation_of_state.α
 g = buoyancy.gravitational_acceleration
 
-dTdz = α * g * N∞^2 # ᵒC m⁻¹
+dTdz = N∞^2 / (α * g) # ᵒC m⁻¹
 
 #
 # ∂⟨T⟩/∂t + ∇ ⋅ F = 0
@@ -68,7 +69,7 @@ surface_temperature_flux =
                       parameters = surface_temperature_flux_parameters)
 
 T_bcs = TracerBoundaryConditions(grid, 
-                                 top = surface_temperature_flux,
+                                 top = BoundaryCondition(Flux, Qᵀ), #surface_temperature_flux,
                                  bottom = BoundaryCondition(Gradient, dTdz))
 
 #
@@ -77,8 +78,10 @@ T_bcs = TracerBoundaryConditions(grid,
 # θ: parameters (for a statistician :-D)
 # 
 
+@inline μ(z, μ₀, h) = μ₀ * exp(z / h)
+
 @inline growth_and_grazing(x, y, t, z, P, θ) =
-    (θ.surface_growth_rate * exp(z / θ.sunlight_attenuation_length) - θ.mortality_rate) * P
+    (μ(z, θ.surface_growth_rate, θ.sunlight_attenuation_length) - θ.mortality_rate) * P
 
 plankton_forcing = Forcing(growth_and_grazing, field_dependencies=:P,
                            parameters=plankton_forcing_parameters)
@@ -91,23 +94,28 @@ model = IncompressibleModel(architecture = CPU(),
                                 coriolis = FPlane(f=1e-4),
                                 buoyancy = buoyancy,
                                  closure = AnisotropicMinimumDissipation(),
-                     boundary_conditions = (T=T_bcs,),
-                                 forcing = (P=plankton_forcing,))
+                     boundary_conditions = (T=T_bcs,))
+                     #            forcing = (P=plankton_forcing,))
 
 # Initial condition
 
 # Random noise concentrated in the top 8 meters
 Ξ(z) = randn() * exp(z / 8)
 
-Tᵢ(x, y, z) = 20 + dTdz * z + dTdz * model.grid.Lz * 1e-6 * Ξ(z)
+Tᵢ(x, y, z) = 20 + dTdz * z + dTdz * model.grid.Lz * 1e-2 * Ξ(z)
 
-set!(model, T=Tᵢ, P=1)
+Qᵇ = α * g * Qᵀ # initial buoyancy flux
+w★ = (Qᵇ * grid.Lz)^(1/3) # a turbulent velocity scale
+uᵢ(x, y, z) = 1e-4 * Ξ(z) * w★
 
-wizard = TimeStepWizard(cfl=1.0, Δt=1.0, max_change=1.1, max_Δt=1.0)
+set!(model, u=uᵢ, w=uᵢ, T=Tᵢ, P=1e-4)
+
+wizard = TimeStepWizard(cfl=1.0, Δt=10.0, max_change=1.1, max_Δt=1minute)
 
 # Nice progress messaging is helpful:
 
 wmax = FieldMaximum(abs, model.velocities.w)
+Pmax = FieldMaximum(abs, model.tracers.P)
 
 start_time = time_ns() # so we can print the total elapsed wall time
 
@@ -122,16 +130,13 @@ progress_message(sim) =
 
 simulation = Simulation(model,
                         Δt = wizard,
-                        stop_time = 6day,
+                        stop_time = 20minutes,
                         iteration_interval = 10,
                         progress = progress_message)
 
-## Create a NamedTuple with eddy viscosity
-eddy_viscosity = (νₑ = model.diffusivities.νₑ,)
-
 simulation.output_writers[:slices] =
-    JLD2OutputWriter(model, merge(model.velocities, model.tracers, eddy_viscosity),
-                           prefix = "ocean_wind_mixing_and_convection",
+    JLD2OutputWriter(model, merge(model.velocities, model.tracers),
+                           prefix = "critical_turbulence_hypothesis",
                      field_slicer = FieldSlicer(j=Int(grid.Ny/2)),
                          schedule = TimeInterval(1minute),
                             force = true)
@@ -172,6 +177,9 @@ times = [file["timeseries/t/$iter"] for iter in iterations]
 
 anim = @animate for (i, iter) in enumerate(iterations)
 
+    local wmax
+    local Pmax
+
     @info "Drawing frame $i from iteration $iter..."
 
     t = file["timeseries/t/$iter"]
@@ -181,7 +189,7 @@ anim = @animate for (i, iter) in enumerate(iterations)
 
     wmax = maximum(abs, w)
     Tmax = maximum(abs, T)
-    Pmax = maximum(abs, P)
+    Pmax = 1 #maximum(abs, P)
 
     wlims, wlevels = divergent_levels(w, 0.8 * wmax)
     Tlims, Tlevels = sequential_levels(T, (19.7, 19.99))
@@ -192,12 +200,11 @@ anim = @animate for (i, iter) in enumerate(iterations)
 
     w_plot = contourf(xw, zw, w'; color=:balance, clims=wlims, levels=wlevels, kwargs...)
     T_plot = contourf(xT, zT, T'; color=:thermal, clims=Tlims, levels=Tlevels, kwargs...)
-    P_plot = contourf(xT, zT, P'; color=:haline,  clims=Slims, levels=Slevels, kwargs...)
+    P_plot = contourf(xT, zT, P'; color=:haline,  clims=Plims, levels=Plevels, kwargs...)
 
     w_title = @sprintf("vertical velocity (m s⁻¹), t = %s", prettytime(t))
     T_title = "temperature (ᵒC)"
-    S_title = "salinity (g kg⁻¹)"
-    P_title = "plankton (?)"
+    P_title = "plankton (μM)"
                        
     ## Arrange the plots side-by-side.
     plot(w_plot, T_plot, P_plot, layout=(1, 3), size=(1200, 600),
