@@ -21,8 +21,8 @@ Lz = 128
 Qʰ = 100  # W m⁻², surface _heat_ flux
 ρₒ = 1026 # kg m⁻³, average density at the surface of the world ocean
 cᴾ = 3991 # J K⁻¹ s⁻¹, typical heat capacity for seawater
-#N∞ = 9.5e-3 # s⁻¹, initial buoyancy frequency
-N∞ = 1e-3 # s⁻¹, initial buoyancy frequency
+N∞ = 9.5e-3 # s⁻¹, initial buoyancy frequency
+#N∞ = 1e-3 # s⁻¹, initial buoyancy frequency
 
 surface_temperature_flux_parameters = (
                                        transition_time = 1day,
@@ -30,11 +30,11 @@ surface_temperature_flux_parameters = (
                                       )
 
 plankton_forcing_parameters = (
-                               surface_growth_rate = 1/day,
+                               surface_growth_rate = 0.11/day,
                                sunlight_attenuation_length = 5.0,
                                mortality_rate = 0.1/day
                               )
-                           
+
 # Setup
 
 Qᵀ = Qʰ / (ρₒ * cᴾ) # K m⁻¹ s⁻¹, surface _temperature_ flux
@@ -68,7 +68,7 @@ surface_temperature_flux =
                       ramping_temperature_flux,
                       parameters = surface_temperature_flux_parameters)
 
-T_bcs = TracerBoundaryConditions(grid, 
+T_bcs = TracerBoundaryConditions(grid,
                                  top = BoundaryCondition(Flux, Qᵀ), #surface_temperature_flux,
                                  bottom = BoundaryCondition(Gradient, dTdz))
 
@@ -76,12 +76,18 @@ T_bcs = TracerBoundaryConditions(grid,
 # Forcing: ∂p/∂t = (μ(z) - m) * p
 #
 # θ: parameters (for a statistician :-D)
-# 
+#
 
 @inline μ(z, μ₀, h) = μ₀ * exp(z / h)
 
+### THIS BLOWS UP INSTANTLY ####################################
 @inline growth_and_grazing(x, y, t, z, P, θ) =
-    (μ(z, θ.surface_growth_rate, θ.sunlight_attenuation_length) - θ.mortality_rate) * P
+    (μ(z, θ.surface_growth_rate, θ.sunlight_attenuation_length) - θ.mortality_rate)*P
+
+### THIS WORKS WITH CONCENTRATIONS AS EXPECTED #################
+#@inline growth_and_grazing(x, y, t, z, P, θ) =
+#        (0.11/day - 0.1/day)*P
+
 
 plankton_forcing = Forcing(growth_and_grazing, field_dependencies=:P,
                            parameters=plankton_forcing_parameters)
@@ -94,8 +100,8 @@ model = IncompressibleModel(architecture = CPU(),
                                 coriolis = FPlane(f=1e-4),
                                 buoyancy = buoyancy,
                                  closure = AnisotropicMinimumDissipation(),
-                     boundary_conditions = (T=T_bcs,))
-                     #            forcing = (P=plankton_forcing,))
+                     boundary_conditions = (T=T_bcs,),
+                                 forcing = (P=plankton_forcing,))
 
 # Initial condition
 
@@ -108,16 +114,16 @@ Qᵇ = α * g * Qᵀ # initial buoyancy flux
 w★ = (Qᵇ * grid.Lz)^(1/3) # a turbulent velocity scale
 uᵢ(x, y, z) = 1e-4 * Ξ(z) * w★
 
-set!(model, u=uᵢ, w=uᵢ, T=Tᵢ, P=1e-4)
+set!(model, u=uᵢ, w=uᵢ, T=Tᵢ, P=1.0)
 
-wizard = TimeStepWizard(cfl=1.0, Δt=10.0, max_change=1.1, max_Δt=1minute)
+wizard = TimeStepWizard(cfl=1.0, Δt=10.0, max_change=1.1, max_Δt=10minute)
 
 # Nice progress messaging is helpful:
 
 wmax = FieldMaximum(abs, model.velocities.w)
 Pmax = FieldMaximum(abs, model.tracers.P)
 
-start_time = time_ns() # so we can print the total elapsed wall time
+    start_time = time_ns() # so we can print the total elapsed wall time
 
 ## Print a progress message
 progress_message(sim) =
@@ -130,7 +136,7 @@ progress_message(sim) =
 
 simulation = Simulation(model,
                         Δt = wizard,
-                        stop_time = 20minutes,
+                        stop_time = 500minutes,
                         iteration_interval = 10,
                         progress = progress_message)
 
@@ -189,10 +195,12 @@ anim = @animate for (i, iter) in enumerate(iterations)
 
     wmax = maximum(abs, w)
     Tmax = maximum(abs, T)
-    Pmax = 1 #maximum(abs, P)
+    Tmin = minimum(abs, T)
+    Pmax = maximum(abs, P) #maximum(abs, P)
+
 
     wlims, wlevels = divergent_levels(w, 0.8 * wmax)
-    Tlims, Tlevels = sequential_levels(T, (19.7, 19.99))
+    Tlims, Tlevels = sequential_levels(T, (Tmin, 0.8*Tmax)) #Tlims, Tlevels = sequential_levels(T, (19.7, 19.99))
     Plims, Plevels = sequential_levels(P, (0.0, 0.8 * Pmax))
 
     kwargs = (linewidth=0, xlabel="x (m)", ylabel="z (m)", aspectratio=1,
@@ -205,7 +213,7 @@ anim = @animate for (i, iter) in enumerate(iterations)
     w_title = @sprintf("vertical velocity (m s⁻¹), t = %s", prettytime(t))
     T_title = "temperature (ᵒC)"
     P_title = "plankton (μM)"
-                       
+
     ## Arrange the plots side-by-side.
     plot(w_plot, T_plot, P_plot, layout=(1, 3), size=(1200, 600),
          title=[w_title T_title P_title])
@@ -213,4 +221,4 @@ anim = @animate for (i, iter) in enumerate(iterations)
     iter == iterations[end] && close(file)
 end
 
-gif(anim, "critical_turbulence_hypothesis.gif", fps = 8) # hide
+gif(anim, "d:/dropbox/working/turbulent_blooms/critical_turbulence_hypothesis.gif", fps = 8) # hide
