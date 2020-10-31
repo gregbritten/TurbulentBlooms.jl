@@ -40,7 +40,7 @@ initial_plankton_concentration(x, y, z) = P₀ # μM
 
 initial_time_step = 10
 max_time_step = 2minutes
-stop_time = 2hours
+stop_time = 1hours
 output_interval = hour / 2
 
 @info """ *** Parameters ***
@@ -206,11 +206,13 @@ anim = @animate for (i, iteration) in enumerate(iterations)
                        clims = (p_min, p_lim),
                       kwargs...)
 
-    profile_plot = plot([P wP Pz], [zp zw zw],
-                        label = ["⟨P⟩ / P₀" "⟨wP⟩ / max|wP|" "⟨∂_z P⟩ / max|∂_z P|"],
+    profile_plot = plot(P, zp, label = "⟨P⟩ / P₀", linewidth = 2,
                         xlabel = "Normalized plankton statistics",
-                        ylabel = "z (m)",
-                        linewidth = 2)
+                        legend = :bottom,
+                        ylabel = "z (m)")
+
+    plot!(profile_plot, wP, zw, label = "⟨wP⟩ / max|wP|", linewidth = 2)
+    plot!(profile_plot, Pz, zw, label = "⟨∂_z P⟩ / max|∂_z P|", linewidth = 2)
 
     κᵀ_plot = plot(κᵉᶠᶠ, zw, linewidth = 2, label = nothing, xlims = (0.8, 2),
                    ylabel = "z (m)", xlabel = "turbulent diffusivity (m² s⁻¹)")
@@ -221,7 +223,7 @@ anim = @animate for (i, iteration) in enumerate(iterations)
     plot(w_plot, p_plot, profile_plot, κᵀ_plot,
          title=[w_title p_title "Plankton statistics" "Turbulent diffusivity"],
          link = :y,
-         layout=(1, 3), size=(1700, 400))
+         layout=Plots.grid(1, 4, widths=[0.4, 0.4, 0.1, 0.1]), size=(1700, 400))
 end
 
 gif(anim, "convecting_plankton.gif", fps = 8) # hide
