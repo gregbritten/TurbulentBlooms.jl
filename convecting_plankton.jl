@@ -1,7 +1,10 @@
 #####
 ##### The critical turbulence hypothesis
 #####
-##### Reproduces Taylor and Ferrari (2011).
+##### Reproduces Taylor and Ferrari (2011):
+#####
+##### https://aslopubs.onlinelibrary.wiley.com/doi/pdf/10.4319/lo.2011.56.6.2293
+#####
 ##### Adapted from the Oceananigans' example convecting_plankton.jl.
 #####
 
