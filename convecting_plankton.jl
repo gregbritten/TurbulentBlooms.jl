@@ -6,6 +6,7 @@ using JLD2
 ## https://discourse.julialang.org/t/unable-to-display-plot-using-the-repl-gks-errors/12826/18
 ENV["GKSwstype"] = "nul"
 using Plots
+using Measures: pt
 
 using Oceananigans
 using Oceananigans.Utils
@@ -18,8 +19,10 @@ using Oceananigans.Diagnostics: FieldMaximum
 
 # Parameters
 
-Nh = 192    # Horizontal resolution
-Nz = 192    # Vertical resolution
+just_make_animation = false
+
+Nh = 32     # Horizontal resolution
+Nz = 32     # Vertical resolution
 Lh = 192    # Domain width
 Lz = 96     # Domain height
 Qh = 10     # Surface heat flux (W m⁻²)
@@ -44,7 +47,7 @@ initial_plankton_concentration(x, y, z) = P₀ # μM
 initial_mixed_layer_depth = 50
 initial_time_step = 10
 max_time_step = 2minutes
-stop_time = 3days
+stop_time = 1day
 output_interval = hour / 2
 
 @info """ *** Parameters ***
@@ -90,165 +93,206 @@ plankton_forcing_func(x, y, z, t, P, θ) = growing_and_grazing(z, P,
 plankton_forcing = Forcing(plankton_forcing_func, field_dependencies=:plankton,
                            parameters=planktonic_parameters)
 
-# Sponge layer for u, v, w, and b
-gaussian_mask = GaussianMask{:z}(center=-grid.Lz, width=grid.Lz/10)
+if !just_make_animation
+    # Sponge layer for u, v, w, and b
+    gaussian_mask = GaussianMask{:z}(center=-grid.Lz, width=grid.Lz/10)
 
-u_sponge = v_sponge = w_sponge = Relaxation(rate=4/hour, mask=gaussian_mask)
+    u_sponge = v_sponge = w_sponge = Relaxation(rate=4/hour, mask=gaussian_mask)
 
-b_sponge = Relaxation(rate = 4/hour,
-                      target = LinearTarget{:z}(intercept=0, gradient=N∞^2),
-                      mask = gaussian_mask)
+    b_sponge = Relaxation(rate = 4/hour,
+                          target = LinearTarget{:z}(intercept=0, gradient=N∞^2),
+                          mask = gaussian_mask)
 
-model = IncompressibleModel(
-           architecture = GPU(),
-                   grid = grid,
-              advection = UpwindBiasedFifthOrder(),
-            timestepper = :RungeKutta3,
-                closure = AnisotropicMinimumDissipation(),
-               coriolis = FPlane(f=f),
-                tracers = (:b, :plankton),
-               buoyancy = BuoyancyTracer(),
-                forcing = (u=u_sponge, v=v_sponge, w=w_sponge,
-                           b=b_sponge, plankton=plankton_forcing),
-    boundary_conditions = (b=buoyancy_bcs,)
-)
+    model = IncompressibleModel(
+               architecture = CPU(),
+                       grid = grid,
+                  advection = UpwindBiasedFifthOrder(),
+                timestepper = :RungeKutta3,
+                    closure = AnisotropicMinimumDissipation(),
+                   coriolis = FPlane(f=f),
+                    tracers = (:b, :plankton),
+                   buoyancy = BuoyancyTracer(),
+                    forcing = (u=u_sponge, v=v_sponge, w=w_sponge,
+                               b=b_sponge, plankton=plankton_forcing),
+        boundary_conditions = (b=buoyancy_bcs,)
+    )
 
-# Initial condition
+    # Initial condition
 
-Ξ(z) = N∞^2 * grid.Lz * 1e-4 * randn() * exp(z / 4) # surface-concentrated noise
+    Ξ(z) = N∞^2 * grid.Lz * 1e-4 * randn() * exp(z / 4) # surface-concentrated noise
 
-stratification(x, y, z) = N∞^2 * z
+    stratification(x, y, z) = N∞^2 * z
 
-initial_buoyancy(x, y, z) =
-    Ξ(z) + ifelse(z < -initial_mixed_layer_depth,
-                  stratification(x, y, z),
-                  stratification(x, y, -initial_mixed_layer_depth))
+    initial_buoyancy(x, y, z) =
+        Ξ(z) + ifelse(z < -initial_mixed_layer_depth,
+                      stratification(x, y, z),
+                      stratification(x, y, -initial_mixed_layer_depth))
 
-set!(model, b=initial_buoyancy, plankton=initial_plankton_concentration)
+    set!(model, b=initial_buoyancy, plankton=initial_plankton_concentration)
 
-# Simulation setup
+    # Simulation setup
 
-wizard = TimeStepWizard(cfl=1.0, Δt=Float64(initial_time_step), max_change=1.1, max_Δt=Float64(max_time_step))
+    wizard = TimeStepWizard(cfl=1.0, Δt=Float64(initial_time_step), max_change=1.1, max_Δt=Float64(max_time_step))
 
-wmax = FieldMaximum(abs, model.velocities.w)
-Pmax = FieldMaximum(abs, model.tracers.plankton)
+    wmax = FieldMaximum(abs, model.velocities.w)
+    Pmax = FieldMaximum(abs, model.tracers.plankton)
 
-start_time = time_ns() # so we can print the total elapsed wall time
+    start_time = time_ns() # so we can print the total elapsed wall time
 
-progress_message(sim) = @info @sprintf(
-    "i: % 4d, t: % 12s, Δt: % 12s, max(|w|) = %.1e ms⁻¹, max(|P|) = %.1e μM, wall time: %s\n",
-    sim.model.clock.iteration, prettytime(model.clock.time),
-    prettytime(wizard.Δt), wmax(sim.model), Pmax(sim.model),
-    prettytime((time_ns() - start_time) * 1e-9))
+    progress_message(sim) = @info @sprintf(
+        "i: % 4d, t: % 12s, Δt: % 12s, max(|w|) = %.1e ms⁻¹, max(|P|) = %.1e μM, wall time: %s\n",
+        sim.model.clock.iteration, prettytime(model.clock.time),
+        prettytime(wizard.Δt), wmax(sim.model), Pmax(sim.model),
+        prettytime((time_ns() - start_time) * 1e-9))
 
-simulation = Simulation(model, Δt=wizard, stop_time=stop_time,
-                        iteration_interval=10, progress=progress_message)
+    simulation = Simulation(model, Δt=wizard, stop_time=stop_time,
+                            iteration_interval=10, progress=progress_message)
 
-u, v, w = model.velocities
-P = model.tracers.plankton
+    u, v, w = model.velocities
+    P = model.tracers.plankton
 
- P̂   = AveragedField(P, dims=(1, 2, 3))
-_P_  = AveragedField(P, dims=(1, 2))
-_wP_ = AveragedField(w * P, dims=(1, 2))
-_Pz_ = AveragedField(∂z(P), dims=(1, 2))
+     P̂   = AveragedField(P, dims=(1, 2, 3))
+    _P_  = AveragedField(P, dims=(1, 2))
+    _wP_ = AveragedField(w * P, dims=(1, 2))
+    _Pz_ = AveragedField(∂z(P), dims=(1, 2))
 
-simulation.output_writers[:fields] =
-    JLD2OutputWriter(model, merge(model.velocities, model.tracers),
-                     schedule = TimeInterval(output_interval),
-                     prefix = "convecting_plankton_fields",
-                     force = true)
+    simulation.output_writers[:fields] =
+        JLD2OutputWriter(model, merge(model.velocities, model.tracers),
+                         schedule = TimeInterval(output_interval),
+                         prefix = "convecting_plankton_fields",
+                         force = true)
 
-simulation.output_writers[:averages] =
-    JLD2OutputWriter(model, (P = _P_, wP = _wP_, Pz = _Pz_, volume_averaged_P = P̂),
-                     schedule = TimeInterval(output_interval),
-                     prefix = "convecting_plankton_averages",
-                     force = true)
+    simulation.output_writers[:averages] =
+        JLD2OutputWriter(model, (P = _P_, wP = _wP_, Pz = _Pz_, volume_averaged_P = P̂),
+                         schedule = TimeInterval(output_interval),
+                         prefix = "convecting_plankton_averages",
+                         force = true)
 
-run!(simulation)
+    run!(simulation)
+end
 
 # Movie
 
-file = jldopen(simulation.output_writers[:fields].filepath)
-averages_file = jldopen(simulation.output_writers[:averages].filepath)
+fields_file = jldopen("convecting_plankton_fields.jld2")
+averages_file = jldopen("convecting_plankton_averages.jld2")
 
-iterations = parse.(Int, keys(file["timeseries/t"]))
+iterations = parse.(Int, keys(fields_file["timeseries/t"]))
+times = [fields_file["timeseries/t/$iter"] for iter in iterations]
+buoyancy_flux_time_series = [buoyancy_flux(0, 0, t, buoyancy_flux_parameters) for t in times] 
 
-xw, yw, zw = nodes(model.velocities.w)
-xp, yp, zp = nodes(model.tracers.plankton)
+xw, yw, zw = nodes((Cell, Cell, Face), grid)
+xp, yp, zp = nodes((Cell, Cell, Cell), grid)
+
+function divergent_levels(c, clim, nlevels=31)
+    levels = range(-clim, stop=clim, length=nlevels)
+    cmax = maximum(abs, c)
+    clim < cmax && (levels = vcat([-cmax], levels, [cmax]))
+    return (-clim, clim), levels
+end
+
+function sequential_levels(c, clims, nlevels=31)
+    levels = collect(range(clims[1], stop=clims[2], length=nlevels))
+    cmin = minimum(c)
+    cmax = maximum(c)
+    cmin < clims[1] && pushfirst!(levels, cmin)
+    cmax > clims[2] && push!(levels, cmax)
+    return clims, levels
+end
 
 @info "Making a movie about plankton..."
 
-anim = @animate for (i, iteration) in enumerate(iterations)
+try
+    anim = @animate for (i, iteration) in enumerate(iterations)
 
-    @info "Plotting frame $i from iteration $iteration..."
-    
-    t = file["timeseries/t/$iteration"]
-    w = file["timeseries/w/$iteration"][:, 1, :]
-    p = file["timeseries/plankton/$iteration"][:, 1, :]
+        @info "Plotting frame $i from iteration $iteration..."
+        
+        w = fields_file["timeseries/w/$iteration"][:, 1, :]
+        p = fields_file["timeseries/plankton/$iteration"][:, 1, :]
 
-    P = averages_file["timeseries/P/$iteration"][1, 1, :]
-    wP = averages_file["timeseries/wP/$iteration"][1, 1, :]
-    Pz = averages_file["timeseries/Pz/$iteration"][1, 1, :]
+        P = averages_file["timeseries/P/$iteration"][1, 1, :]
+        wP = averages_file["timeseries/wP/$iteration"][1, 1, :]
+        Pz = averages_file["timeseries/Pz/$iteration"][1, 1, :]
 
-    κᵉᶠᶠ = @. - wP / Pz
+        κᵉᶠᶠ = @. - wP / Pz
 
-    # Normalize profiles
-    P ./= P₀
-    wP ./= maximum(abs, wP)
-    Pz ./= maximum(abs, Pz)
+        # Normalize profiles
+        P ./= P₀
+        wP ./= maximum(abs, wP)
+        Pz ./= maximum(abs, Pz)
 
-    w_max = maximum(abs, w) + 1e-9
-    w_lim = 0.8 * w_max
+        w_lim = 1e-3 # 0.8 * maximum(abs, w) + 1e-9
+        p_lim = 2
 
-    p_min = minimum(p) - 1e-9
-    p_max = maximum(p) + 1e-9
-    p_lim = 2
+        w_lims, w_levels = divergent_levels(w, w_lim)
+        p_lims, p_levels = sequential_levels(p, (0.9, p_lim))
 
-    w_levels = vcat([-w_max], range(-w_lim, stop=w_lim, length=21), [w_max])
-    p_levels = collect(range(p_min, stop=p_lim, length=20))
-    p_max > p_lim && push!(p_levels, p_max)
+        kwargs = (xlabel="x (m)", ylabel="y (m)", aspectratio=1, linewidth=0, colorbar=true,
+                  xlims=(0, grid.Lx), ylims=(-grid.Lz, 0))
 
-    kwargs = (xlabel="x", ylabel="y", aspectratio=1, linewidth=0, colorbar=true,
-              xlims=(0, model.grid.Lx), ylims=(-model.grid.Lz, 0))
+        w_contours = contourf(xw, zw, w';
+                               color = :balance,
+                              margin = 10pt,
+                              levels = w_levels,
+                               clims = w_lims,
+                              kwargs...)
 
-    w_plot = contourf(xw, zw, w';
-                       color = :balance,
-                      levels = w_levels,
-                       clims = (-w_lim, w_lim),
-                      kwargs...)
+        p_contours = contourf(xp, zp, p';
+                               color = :matter,
+                              margin = 10pt,
+                              levels = p_levels,
+                               clims = p_lims,
+                              kwargs...)
 
-    p_plot = contourf(xp, zp, p';
-                       color = :matter,
-                      levels = p_levels,
-                       clims = (p_min, p_lim),
-                      kwargs...)
+        profile_plot = plot(P, zp, label = "⟨P⟩ / P₀",
+                               linewidth = 2,
+                                  margin = 20pt,
+                                  xlabel = "Normalized plankton statistics",
+                                  legend = :bottom,
+                                  ylabel = "z (m)")
 
-    profile_plot = plot(P, zp, label = "⟨P⟩ / P₀", linewidth = 2,
-                        xlabel = "Normalized plankton statistics",
-                        legend = :bottom,
-                        ylabel = "z (m)")
+        plot!(profile_plot, wP, zw, label = "⟨wP⟩ / max|wP|", linewidth = 2)
+        plot!(profile_plot, Pz, zw, label = "⟨∂_z P⟩ / max|∂_z P|", linewidth = 2)
 
-    plot!(profile_plot, wP, zw, label = "⟨wP⟩ / max|wP|", linewidth = 2)
-    plot!(profile_plot, Pz, zw, label = "⟨∂_z P⟩ / max|∂_z P|", linewidth = 2)
+        κᵉᶠᶠ_plot = plot(κᵉᶠᶠ, zw,
+                       linewidth = 2,
+                            margin = 20pt,
+                           label = nothing,
+                           xlims = (0, 1e-1),
+                          ylabel = "z (m)",
+                          xlabel = "κᵉᶠᶠ (m² s⁻¹)")
 
-    κᵀ_plot = plot(κᵉᶠᶠ, zw, linewidth = 2, label = nothing,
-                   ylabel = "z (m)", xlabel = "turbulent diffusivity (m² s⁻¹)")
+        flux_plot = plot(times ./ day, buoyancy_flux_time_series,
+                         linewidth = 1,
+                            margin = 20pt,
+                             label = "Buoyancy flux time series",
+                            legend = :bottomleft,
+                            xlabel = "Time (days)",
+                            ylabel = "Buoyancy flux (m² s⁻³)",
+                             ylims = (0.0, 1.1 * buoyancy_flux_parameters.initial_buoyancy_flux))
 
-    w_title = @sprintf("w(y=0, t=%s) (m s⁻¹)", prettytime(t))
-    p_title = @sprintf("P(y=0, t=%s) (μM)", prettytime(t))
+        scatter!(flux_plot, times[i:i] / day, buoyancy_flux_time_series[i:i], markershape=:circle, markercolor=:red,
+                       label="Current buoyancy flux")
 
-    # Layout something like:
-    #
-    # [ w contours ]  [ [⟨P⟩+⟨wP⟩] [κ] ]
-    # [ p contours ]  [      Qᵇ(t)     ]
-    #
-    layout = @layout [ Plots.grid(2, 1) [Plots.grid(1, 2)
-                                         c               ] ]
+        t = times[i]
+        w_title = @sprintf("w(y = 0 m, t = %-16s) (m s⁻¹)", prettytime(t))
+        p_title = @sprintf("P(y = 0 m, t = %-16s) (μM)", prettytime(t))
 
-    plot(w_plot, flux_plot, p_plot, profile_plot, κᵀ_plot,
-         title=[w_title p_title "Plankton statistics" "Turbulent diffusivity"],
-         link = :y,
-         layout=layout)
+        # Layout something like:
+        #
+        # [ w contours ]  [ [⟨P⟩+⟨wP⟩] [κ] ]
+        # [ p contours ]  [      Qᵇ(t)     ]
+        
+        layout = @layout [ Plots.grid(2, 1) [ Plots.grid(1, 2)
+                                                     c         ] ]
+
+        plot(w_contours, p_contours, profile_plot, κᵉᶠᶠ_plot, flux_plot,
+             title=[w_title p_title "" "" ""],
+             layout=layout, size=(1600, 700))
+    end
+
+    gif(anim, "convecting_plankton.gif", fps = 8) # hide
+
+finally
+    close(fields_file)
+    close(averages_file)
 end
-
-gif(anim, "convecting_plankton.gif", fps = 8) # hide
