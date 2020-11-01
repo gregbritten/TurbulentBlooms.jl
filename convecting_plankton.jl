@@ -2,6 +2,9 @@
 
 using Printf
 using JLD2
+
+## https://discourse.julialang.org/t/unable-to-display-plot-using-the-repl-gks-errors/12826/18
+ENV["GKSwstype"] = "nul"
 using Plots
 
 using Oceananigans
@@ -15,11 +18,11 @@ using Oceananigans.Diagnostics: FieldMaximum
 
 # Parameters
 
-Nh = 64     # Horizontal resolution
-Nz = 64     # Vertical resolution
-Lh = 64     # Domain width
-Lz = 64     # Domain height
-Qh = 1000   # Surface heat flux (W m⁻²)
+Nh = 192    # Horizontal resolution
+Nz = 192    # Vertical resolution
+Lh = 192    # Domain width
+Lz = 96     # Domain height
+Qh = 10     # Surface heat flux (W m⁻²)
  ρ = 1026   # Reference density (kg m⁻³)
 cᴾ = 3991   # Heat capacity (J (ᵒC)⁻¹ m⁻²)
  α = 2e-4   # Kinematic thermal expansion coefficient (ᵒC m⁻¹)
@@ -28,19 +31,20 @@ N∞ = 9.5e-3 # s⁻²
  f = 1e-4   # s⁻¹
 
 buoyancy_flux_parameters = (initial_buoyancy_flux = α * g * Qh / (ρ * cᴾ), # m³ s⁻²
-                            start_ramp_down = 12hours,
-                            shut_off = 1day)
+                            start_ramp_down = 1day,
+                            shut_off = 2day)
 
-planktonic_parameters = (sunlight_attenuation_scale = 16.0,
+planktonic_parameters = (sunlight_attenuation_scale = 5.0,
                          surface_growth_rate = 1/day,
                          mortality_rate = 0.1/day)
 
 P₀ = 1
 initial_plankton_concentration(x, y, z) = P₀ # μM
 
+initial_mixed_layer_depth = 50
 initial_time_step = 10
 max_time_step = 2minutes
-stop_time = 1hours
+stop_time = 3days
 output_interval = hour / 2
 
 @info """ *** Parameters ***
@@ -49,22 +53,21 @@ output_interval = hour / 2
     Domain:                            ($Lh, $Lh, $Lz) m
     Initial heat flux:                 $(Qh) W m⁻²
     Initial buoyancy flux:             $(@sprintf("%.2e", buoyancy_flux_parameters.initial_buoyancy_flux)) m² s⁻³
+    Initial mixed layer depth:         $(initial_mixed_layer_depth) m
     Cooling starts ramping down:       $(prettytime(buoyancy_flux_parameters.start_ramp_down))
     Cooling shuts off:                 $(prettytime(buoyancy_flux_parameters.shut_off))
+    Simulation stop time:              $(prettytime(stop_time))
     Plankton surface growth rate:      $(day * planktonic_parameters.surface_growth_rate) day⁻¹
     Plankton mortality rate:           $(day * planktonic_parameters.mortality_rate) day⁻¹
     Sunlight attenuation length scale: $(planktonic_parameters.sunlight_attenuation_scale) m
 
 """
 
-
 # Grid
 
 grid = RegularCartesianGrid(size=(Nh, Nh, Nz), extent=(Lh, Lh, Lz))
 
 # Boundary conditions
-
-# Buoyancy flux
 delayed_ramp_down(t, start, shutoff) =
     ifelse(t < start, 1.0,
     ifelse(t < shutoff, (shutoff - t) / (shutoff - start), 0.0))
@@ -77,7 +80,6 @@ buoyancy_bot_bc = BoundaryCondition(Gradient, N∞^2)
 buoyancy_bcs = TracerBoundaryConditions(grid, top = buoyancy_top_bc, bottom = buoyancy_bot_bc)
 
 # Plankton dynamics
-
 growing_and_grazing(z, P, h, μ₀, m) = (μ₀ * exp(z / h) - m) * P
 
 plankton_forcing_func(x, y, z, t, P, θ) = growing_and_grazing(z, P,
@@ -88,9 +90,17 @@ plankton_forcing_func(x, y, z, t, P, θ) = growing_and_grazing(z, P,
 plankton_forcing = Forcing(plankton_forcing_func, field_dependencies=:plankton,
                            parameters=planktonic_parameters)
 
-# Model setup
+# Sponge layer for u, v, w, and b
+gaussian_mask = GaussianMask{:z}(center=-grid.Lz, width=grid.Lz/10)
+
+u_sponge = v_sponge = w_sponge = Relaxation(rate=4/hour, mask=gaussian_mask)
+
+b_sponge = Relaxation(rate = 4/hour,
+                      target = LinearTarget{:z}(intercept=0, gradient=N∞^2),
+                      mask = gaussian_mask)
 
 model = IncompressibleModel(
+           architecture = GPU(),
                    grid = grid,
               advection = UpwindBiasedFifthOrder(),
             timestepper = :RungeKutta3,
@@ -98,15 +108,21 @@ model = IncompressibleModel(
                coriolis = FPlane(f=f),
                 tracers = (:b, :plankton),
                buoyancy = BuoyancyTracer(),
-                forcing = (plankton=plankton_forcing,),
+                forcing = (u=u_sponge, v=v_sponge, w=w_sponge,
+                           b=b_sponge, plankton=plankton_forcing),
     boundary_conditions = (b=buoyancy_bcs,)
 )
 
 # Initial condition
 
-Ξ(z) = randn() * z / grid.Lz * (1 + z / grid.Lz) # noise
+Ξ(z) = N∞^2 * grid.Lz * 1e-4 * randn() * exp(z / 4) # surface-concentrated noise
 
-initial_buoyancy(x, y, z) = N∞^2 * z + N∞^2 * grid.Lz * 1e-6 * Ξ(z)
+stratification(x, y, z) = N∞^2 * z
+
+initial_buoyancy(x, y, z) =
+    Ξ(z) + ifelse(z < -initial_mixed_layer_depth,
+                  stratification(x, y, z),
+                  stratification(x, y, -initial_mixed_layer_depth))
 
 set!(model, b=initial_buoyancy, plankton=initial_plankton_concentration)
 
@@ -131,6 +147,7 @@ simulation = Simulation(model, Δt=wizard, stop_time=stop_time,
 u, v, w = model.velocities
 P = model.tracers.plankton
 
+ P̂   = AveragedField(P, dims=(1, 2, 3))
 _P_  = AveragedField(P, dims=(1, 2))
 _wP_ = AveragedField(w * P, dims=(1, 2))
 _Pz_ = AveragedField(∂z(P), dims=(1, 2))
@@ -142,7 +159,7 @@ simulation.output_writers[:fields] =
                      force = true)
 
 simulation.output_writers[:averages] =
-    JLD2OutputWriter(model, (P = _P_, wP = _wP_, Pz = _Pz_),
+    JLD2OutputWriter(model, (P = _P_, wP = _wP_, Pz = _Pz_, volume_averaged_P = P̂),
                      schedule = TimeInterval(output_interval),
                      prefix = "convecting_plankton_averages",
                      force = true)
@@ -214,16 +231,24 @@ anim = @animate for (i, iteration) in enumerate(iterations)
     plot!(profile_plot, wP, zw, label = "⟨wP⟩ / max|wP|", linewidth = 2)
     plot!(profile_plot, Pz, zw, label = "⟨∂_z P⟩ / max|∂_z P|", linewidth = 2)
 
-    κᵀ_plot = plot(κᵉᶠᶠ, zw, linewidth = 2, label = nothing, xlims = (0.8, 2),
+    κᵀ_plot = plot(κᵉᶠᶠ, zw, linewidth = 2, label = nothing,
                    ylabel = "z (m)", xlabel = "turbulent diffusivity (m² s⁻¹)")
 
     w_title = @sprintf("w(y=0, t=%s) (m s⁻¹)", prettytime(t))
     p_title = @sprintf("P(y=0, t=%s) (μM)", prettytime(t))
 
-    plot(w_plot, p_plot, profile_plot, κᵀ_plot,
+    # Layout something like:
+    #
+    # [ w contours ]  [ [⟨P⟩+⟨wP⟩] [κ] ]
+    # [ p contours ]  [      Qᵇ(t)     ]
+    #
+    layout = @layout [ Plots.grid(2, 1) [Plots.grid(1, 2)
+                                         c               ] ]
+
+    plot(w_plot, flux_plot, p_plot, profile_plot, κᵀ_plot,
          title=[w_title p_title "Plankton statistics" "Turbulent diffusivity"],
          link = :y,
-         layout=Plots.grid(1, 4, widths=[0.4, 0.4, 0.1, 0.1]), size=(1700, 400))
+         layout=layout)
 end
 
 gif(anim, "convecting_plankton.gif", fps = 8) # hide
