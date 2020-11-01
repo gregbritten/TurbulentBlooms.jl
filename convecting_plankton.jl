@@ -24,33 +24,36 @@ just_make_animation = false
 Nh = 32     # Horizontal resolution
 Nz = 32     # Vertical resolution
 Lh = 192    # Domain width
-Lz = 96     # Domain height
+Lz = 128    # Domain height
 Qh = 10     # Surface heat flux (W m⁻²)
  ρ = 1026   # Reference density (kg m⁻³)
 cᴾ = 3991   # Heat capacity (J (ᵒC)⁻¹ m⁻²)
  α = 2e-4   # Kinematic thermal expansion coefficient (ᵒC m⁻¹)
  g = 9.81   # Gravitational acceleration (m s⁻²)
-N∞ = 9.5e-3 # s⁻²
- f = 1e-4   # s⁻¹
+N∞ = 9.5e-3 # Initial buoyancy frequency below the mixed layer (s⁻²)
+ f = 1e-4   # Coriolis parameter (s⁻¹)
+
+simulation_stop_time = 4day
+initial_mixed_layer_depth = 50 # m
 
 buoyancy_flux_parameters = (initial_buoyancy_flux = α * g * Qh / (ρ * cᴾ), # m³ s⁻²
-                            start_ramp_down = 1day,
-                            shut_off = 2day)
+                                  start_ramp_down = 1day,
+                                         shut_off = 2day)
 
-planktonic_parameters = (sunlight_attenuation_scale = 5.0,
-                         surface_growth_rate = 1/day,
-                         mortality_rate = 0.1/day)
+plankton_dynamics_parameters = (sunlight_attenuation_scale = 5.0, # m
+                                       surface_growth_rate = 1/day,
+                                            mortality_rate = 0.1/day)
 
-P₀ = 1
+# Initial uniform plankton concentration
+P₀ = 1 # μM
 initial_plankton_concentration(x, y, z) = P₀ # μM
 
-initial_mixed_layer_depth = 50
-initial_time_step = 10
-max_time_step = 2minutes
-stop_time = 1day
-output_interval = hour / 2
+# Numerics and output parameters
+initial_time_step = 10 # s
+    max_time_step = 2minutes
+  output_interval = hour / 4
 
-@info """ *** Parameters ***
+@info """ *** Parameters for demonstrating the critical turbulence hypothesis ***
 
     Resolution:                        ($Nh, $Nh, $Nz)
     Domain:                            ($Lh, $Lh, $Lz) m
@@ -59,10 +62,10 @@ output_interval = hour / 2
     Initial mixed layer depth:         $(initial_mixed_layer_depth) m
     Cooling starts ramping down:       $(prettytime(buoyancy_flux_parameters.start_ramp_down))
     Cooling shuts off:                 $(prettytime(buoyancy_flux_parameters.shut_off))
-    Simulation stop time:              $(prettytime(stop_time))
-    Plankton surface growth rate:      $(day * planktonic_parameters.surface_growth_rate) day⁻¹
-    Plankton mortality rate:           $(day * planktonic_parameters.mortality_rate) day⁻¹
-    Sunlight attenuation length scale: $(planktonic_parameters.sunlight_attenuation_scale) m
+    Simulation stop time:              $(prettytime(simulation_stop_time))
+    Plankton surface growth rate:      $(day * plankton_dynamics_parameters.surface_growth_rate) day⁻¹
+    Plankton mortality rate:           $(day * plankton_dynamics_parameters.mortality_rate) day⁻¹
+    Sunlight attenuation length scale: $(plankton_dynamics_parameters.sunlight_attenuation_scale) m
 
 """
 
@@ -91,13 +94,13 @@ plankton_forcing_func(x, y, z, t, P, θ) = growing_and_grazing(z, P,
                                                               θ.mortality_rate)
 
 plankton_forcing = Forcing(plankton_forcing_func, field_dependencies=:plankton,
-                           parameters=planktonic_parameters)
+                           parameters=plankton_dynamics_parameters)
 
 if !just_make_animation
     # Sponge layer for u, v, w, and b
     gaussian_mask = GaussianMask{:z}(center=-grid.Lz, width=grid.Lz/10)
 
-    u_sponge = v_sponge = w_sponge = Relaxation(rate=4/hour, mask=gaussian_mask)
+    u_sponge = v_sponge = w_sponge = Relaxation(rate=2/hour, mask=gaussian_mask)
 
     b_sponge = Relaxation(rate = 4/hour,
                           target = LinearTarget{:z}(intercept=0, gradient=N∞^2),
@@ -145,7 +148,7 @@ if !just_make_animation
         prettytime(wizard.Δt), wmax(sim.model), Pmax(sim.model),
         prettytime((time_ns() - start_time) * 1e-9))
 
-    simulation = Simulation(model, Δt=wizard, stop_time=stop_time,
+    simulation = Simulation(model, Δt=wizard, stop_time=simulation_stop_time,
                             iteration_interval=10, progress=progress_message)
 
     u, v, w = model.velocities
@@ -204,6 +207,9 @@ end
 try
     anim = @animate for (i, iteration) in enumerate(iterations)
 
+        local w
+        local p
+
         @info "Plotting frame $i from iteration $iteration..."
         
         w = fields_file["timeseries/w/$iteration"][:, 1, :]
@@ -216,11 +222,11 @@ try
         κᵉᶠᶠ = @. - wP / Pz
 
         # Normalize profiles
-        P ./= P₀
+        @. P = P / P₀ - 1
         wP ./= maximum(abs, wP)
         Pz ./= maximum(abs, Pz)
 
-        w_lim = 1e-3 # 0.8 * maximum(abs, w) + 1e-9
+        w_lim = 1e-2 # 0.8 * maximum(abs, w) + 1e-9
         p_lim = 2
 
         w_lims, w_levels = divergent_levels(w, w_lim)
@@ -243,21 +249,23 @@ try
                                clims = p_lims,
                               kwargs...)
 
-        profile_plot = plot(P, zp, label = "⟨P⟩ / P₀",
-                               linewidth = 2,
+        profile_plot = plot(P, zp, label = "⟨P⟩ / P₀ - 1",
+                               linewidth = 4,
+                                   color = :black,
+                                   alpha = 0.4,
                                   margin = 20pt,
                                   xlabel = "Normalized plankton statistics",
                                   legend = :bottom,
                                   ylabel = "z (m)")
 
-        plot!(profile_plot, wP, zw, label = "⟨wP⟩ / max|wP|", linewidth = 2)
-        plot!(profile_plot, Pz, zw, label = "⟨∂_z P⟩ / max|∂_z P|", linewidth = 2)
+        plot!(profile_plot, wP, zw, label = "⟨wP⟩ / max|wP|", color = :steelblue, linewidth = 1.2, alpha = 0.8)
+        plot!(profile_plot, Pz, zw, label = "⟨∂_z P⟩ / max|∂_z P|", color = :red, linewidth = 1.2, alpha = 0.8)
 
         κᵉᶠᶠ_plot = plot(κᵉᶠᶠ, zw,
                        linewidth = 2,
-                            margin = 20pt,
+                          margin = 20pt,
                            label = nothing,
-                           xlims = (0, 1e-1),
+                           xlims = (-1e-2, 2e-1),
                           ylabel = "z (m)",
                           xlabel = "κᵉᶠᶠ (m² s⁻¹)")
 
@@ -265,13 +273,24 @@ try
                          linewidth = 1,
                             margin = 20pt,
                              label = "Buoyancy flux time series",
+                             color = :black,
+                             alpha = 0.4,
                             legend = :bottomleft,
                             xlabel = "Time (days)",
                             ylabel = "Buoyancy flux (m² s⁻³)",
                              ylims = (0.0, 1.1 * buoyancy_flux_parameters.initial_buoyancy_flux))
 
-        scatter!(flux_plot, times[i:i] / day, buoyancy_flux_time_series[i:i], markershape=:circle, markercolor=:red,
-                       label="Current buoyancy flux")
+        plot!(flux_plot, times[1:i] / day, buoyancy_flux_time_series[1:i],
+              color = :steelblue,
+              linewidth = 6,
+              label = nothing)
+
+        scatter!(flux_plot, times[i:i] / day, buoyancy_flux_time_series[i:i],
+                 markershape = :rtriangle,
+                 color = :steelblue,
+                 markerstrokewidth = 0,
+                 markersize = 15,
+                 label = "Current buoyancy flux")
 
         t = times[i]
         w_title = @sprintf("w(y = 0 m, t = %-16s) (m s⁻¹)", prettytime(t))
