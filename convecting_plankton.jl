@@ -1,4 +1,9 @@
-# # Critical turbulence hypothesis
+#####
+##### The critical turbulence hypothesis
+#####
+##### Reproduces Taylor and Ferrari (2011).
+##### Adapted from the Oceananigans' example convecting_plankton.jl.
+#####
 
 using Printf
 using JLD2
@@ -17,21 +22,23 @@ using Oceananigans.OutputWriters
 using Oceananigans.Fields
 using Oceananigans.Diagnostics: FieldMaximum
 
-# Parameters
+#####
+##### Parameters
+#####
 
-just_make_animation = false
+just_remake_animation = true
 
-Nh = 256    # Horizontal resolution
-Nz = 256    # Vertical resolution
-Lh = 192    # Domain width
-Lz = 128    # Domain height
-Qh = 10     # Surface heat flux (W m⁻²)
- ρ = 1000   # Reference density used by Taylor and Ferrari (2011) (kg m⁻³)
-cᴾ = 4000   # Heat capacity used in Taylor and Ferrari (2011) (J (ᵒC)⁻¹ m⁻²)
+Nh = 32       # Horizontal resolution
+Nz = 32       # Vertical resolution
+Lh = 192      # Domain width
+Lz = 96       # Domain height
+Qh = 10       # Surface heat flux (W m⁻²)
+ ρ = 1000     # Reference density used by Taylor and Ferrari (2011) (kg m⁻³)
+cᴾ = 4000     # Heat capacity used in Taylor and Ferrari (2011) (J (ᵒC)⁻¹ m⁻²)
  α = 1.64e-4  # Kinematic thermal expansion coefficient (ᵒC m⁻¹)
- g = 9.81   # Gravitational acceleration (m s⁻²)
-N∞ = 9.5e-3 # Initial buoyancy frequency below the mixed layer (s⁻²)
- f = 1e-4   # Coriolis parameter (s⁻¹)
+ g = 9.81     # Gravitational acceleration (m s⁻²)
+N∞ = 9.5e-3   # Initial buoyancy frequency below the mixed layer (s⁻²)
+ f = 1e-4     # Coriolis parameter (s⁻¹)
 
 simulation_stop_time = 6day
 initial_mixed_layer_depth = 50 # m
@@ -50,11 +57,11 @@ P₀ = 1 # μM
 initial_plankton_concentration(x, y, z) = P₀ # μM
 
 # Numerics and output parameters
-initial_time_step = 10 # s
+initial_time_step = 30 # s
     max_time_step = 2minutes
-  output_interval = hour / 4
+  output_interval = hour / 2
 
-@info """ *** Parameters for demonstrating the critical turbulence hypothesis ***
+@info """ Parameters for demonstrating the critical turbulence hypothesis
 
     Resolution:                        ($Nh, $Nh, $Nz)
     Domain:                            ($Lh, $Lh, $Lz) m
@@ -71,26 +78,34 @@ initial_time_step = 10 # s
 
 """
 
-# Notes about physical parameters:
-#
-# * Taylor and Ferrari (2011) use Qh = {1, 10, 100, 1000}.
-#
-# * Typical reference densities for ocean seawater are somewhat higher than 1000 kg m⁻³.
-#   The average value at the surface of the world ocean is 1026 kg m⁻³ (Roquet et al 2015, Ocean Modelling).
-#
-# * For conservative temperature, cᴾ = 3991 J (ᵒC)⁻¹ m⁻².
-#
-# * (Is a sunlight attenuation length of 5 m reasonable?)
-#
-# Grid
+@info """ Notes about physical parameters:
+
+    * Taylor and Ferrari (2011) run four simulations with Qh = {1, 10, 100, 1000} W m⁻².
+    
+    * Typical reference densities for ocean seawater are somewhat higher than 1000 kg m⁻³.
+      The average value at the surface of the world ocean is 1026 kg m⁻³ (Roquet et al 2015, Ocean Modelling).
+    
+    * For heat fluxes calculated for conservative temperature use cᴾ = 3991 J (ᵒC)⁻¹ m⁻².
+    
+    * Our kinematic thermal expansion coefficient, α, differs from the "ordinary" thermal expansion
+      coefficient. Here, α = α̃ / ρ, where α̃ is the thermal expansion coefficient and 
+      ρ is the reference density.
+      See https://en.wikipedia.org/wiki/Thermal_expansion#Coefficient_of_thermal_expansion.
+    
+    * (Is a sunlight attenuation length of 5 m reasonable?)
+
+"""
+
+#####
+##### Grid and boundary conditions
+#####
 
 grid = RegularCartesianGrid(size=(Nh, Nh, Nz), extent=(Lh, Lh, Lz))
 
-# Boundary conditions
 ramp_up_ramp_down(t, plateau, ramp_down, shutoff) =
     ifelse(t < plateau, t / plateau,
     ifelse(t < ramp_down, 1.0,
-    ifelse(t < shutoff, (shutoff - t) / (shutoff - ramp_down), 0.0))
+    ifelse(t < shutoff, (shutoff - t) / (shutoff - ramp_down), 0.0)))
 
 buoyancy_flux(x, y, t, θ) = θ.maximum_buoyancy_flux * ramp_up_ramp_down(t, θ.stop_ramp_up, θ.start_ramp_down, θ.shut_off)
 
@@ -99,7 +114,10 @@ buoyancy_bot_bc = BoundaryCondition(Gradient, N∞^2)
                                                    
 buoyancy_bcs = TracerBoundaryConditions(grid, top = buoyancy_top_bc, bottom = buoyancy_bot_bc)
 
-# Plankton dynamics
+#####
+##### Plankton dynamics
+#####
+
 growing_and_grazing(z, P, h, μ₀, m) = (μ₀ * exp(z / h) - m) * P
 
 plankton_forcing_func(x, y, z, t, P, θ) = growing_and_grazing(z, P,
@@ -110,16 +128,24 @@ plankton_forcing_func(x, y, z, t, P, θ) = growing_and_grazing(z, P,
 plankton_forcing = Forcing(plankton_forcing_func, field_dependencies=:plankton,
                            parameters=plankton_dynamics_parameters)
 
-if !just_make_animation
-    # Sponge layer for u, v, w, and b
-    gaussian_mask = GaussianMask{:z}(center=-grid.Lz, width=grid.Lz/10)
+#####
+##### Bottom sponge layer for u, v, w, and b
+#####
 
-    u_sponge = v_sponge = w_sponge = Relaxation(rate=2/hour, mask=gaussian_mask)
+gaussian_mask = GaussianMask{:z}(center=-grid.Lz, width=grid.Lz/10)
 
-    b_sponge = Relaxation(rate = 4/hour,
-                          target = LinearTarget{:z}(intercept=0, gradient=N∞^2),
-                          mask = gaussian_mask)
+u_sponge = v_sponge = w_sponge = Relaxation(rate=2/hour, mask=gaussian_mask)
 
+b_sponge = Relaxation(rate = 4/hour,
+                      target = LinearTarget{:z}(intercept=0, gradient=N∞^2),
+                      mask = gaussian_mask)
+
+#####
+##### Simulate some phytoplankton
+#####
+
+if !just_remake_animation # actually run the simulation
+    
     model = IncompressibleModel(
                architecture = CPU(),
                        grid = grid,
@@ -129,8 +155,7 @@ if !just_make_animation
                    coriolis = FPlane(f=f),
                     tracers = (:b, :plankton),
                    buoyancy = BuoyancyTracer(),
-                    forcing = (u=u_sponge, v=v_sponge, w=w_sponge,
-                               b=b_sponge, plankton=plankton_forcing),
+                    forcing = (u=u_sponge, v=v_sponge, w=w_sponge, b=b_sponge, plankton=plankton_forcing),
         boundary_conditions = (b=buoyancy_bcs,)
     )
 
@@ -188,7 +213,9 @@ if !just_make_animation
     run!(simulation)
 end
 
-# Movie
+#####
+##### Movie
+#####
 
 fields_file = jldopen("convecting_plankton_fields.jld2")
 averages_file = jldopen("convecting_plankton_averages.jld2")
@@ -289,7 +316,7 @@ try
                              label = "Buoyancy flux time series",
                              color = :black,
                              alpha = 0.4,
-                            legend = :bottomleft,
+                            legend = :topright,
                             xlabel = "Time (days)",
                             ylabel = "Buoyancy flux (m² s⁻³)",
                              ylims = (0.0, 1.1 * buoyancy_flux_parameters.maximum_buoyancy_flux))
