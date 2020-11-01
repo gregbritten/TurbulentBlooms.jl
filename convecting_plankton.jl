@@ -1,7 +1,10 @@
 #####
 ##### The critical turbulence hypothesis
 #####
-##### Reproduces Taylor and Ferrari (2011).
+##### Reproduces Taylor and Ferrari (2011):
+#####
+##### https://aslopubs.onlinelibrary.wiley.com/doi/pdf/10.4319/lo.2011.56.6.2293
+#####
 ##### Adapted from the Oceananigans' example convecting_plankton.jl.
 #####
 
@@ -26,10 +29,10 @@ using Oceananigans.Diagnostics: FieldMaximum
 ##### Parameters
 #####
 
-just_remake_animation = true
+just_remake_animation = false
 
-Nh = 32       # Horizontal resolution
-Nz = 32       # Vertical resolution
+Nh = 192      # Horizontal resolution
+Nz = 192      # Vertical resolution
 Lh = 192      # Domain width
 Lz = 96       # Domain height
 Qh = 10       # Surface heat flux (W m⁻²)
@@ -147,7 +150,7 @@ b_sponge = Relaxation(rate = 4/hour,
 if !just_remake_animation # actually run the simulation
     
     model = IncompressibleModel(
-               architecture = CPU(),
+               architecture = GPU(),
                        grid = grid,
                   advection = UpwindBiasedFifthOrder(),
                 timestepper = :RungeKutta3,
