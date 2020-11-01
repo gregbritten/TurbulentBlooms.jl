@@ -21,26 +21,27 @@ using Oceananigans.Diagnostics: FieldMaximum
 
 just_make_animation = false
 
-Nh = 32     # Horizontal resolution
-Nz = 32     # Vertical resolution
+Nh = 256    # Horizontal resolution
+Nz = 256    # Vertical resolution
 Lh = 192    # Domain width
 Lz = 128    # Domain height
 Qh = 10     # Surface heat flux (W m⁻²)
- ρ = 1026   # Reference density (kg m⁻³)
-cᴾ = 3991   # Heat capacity (J (ᵒC)⁻¹ m⁻²)
- α = 2e-4   # Kinematic thermal expansion coefficient (ᵒC m⁻¹)
+ ρ = 1000   # Reference density used by Taylor and Ferrari (2011) (kg m⁻³)
+cᴾ = 4000   # Heat capacity used in Taylor and Ferrari (2011) (J (ᵒC)⁻¹ m⁻²)
+ α = 1.64e-4  # Kinematic thermal expansion coefficient (ᵒC m⁻¹)
  g = 9.81   # Gravitational acceleration (m s⁻²)
 N∞ = 9.5e-3 # Initial buoyancy frequency below the mixed layer (s⁻²)
  f = 1e-4   # Coriolis parameter (s⁻¹)
 
-simulation_stop_time = 4day
+simulation_stop_time = 6day
 initial_mixed_layer_depth = 50 # m
 
-buoyancy_flux_parameters = (initial_buoyancy_flux = α * g * Qh / (ρ * cᴾ), # m³ s⁻²
-                                  start_ramp_down = 1day,
-                                         shut_off = 2day)
+buoyancy_flux_parameters = (maximum_buoyancy_flux = α * g * Qh / (ρ * cᴾ), # m³ s⁻²
+                                     stop_ramp_up = 1day,
+                                  start_ramp_down = 2day,
+                                         shut_off = 4day)
 
-plankton_dynamics_parameters = (sunlight_attenuation_scale = 5.0, # m
+plankton_dynamics_parameters = (sunlight_attenuation_length = 5.0, # m
                                        surface_growth_rate = 1/day,
                                             mortality_rate = 0.1/day)
 
@@ -58,27 +59,40 @@ initial_time_step = 10 # s
     Resolution:                        ($Nh, $Nh, $Nz)
     Domain:                            ($Lh, $Lh, $Lz) m
     Initial heat flux:                 $(Qh) W m⁻²
-    Initial buoyancy flux:             $(@sprintf("%.2e", buoyancy_flux_parameters.initial_buoyancy_flux)) m² s⁻³
+    Maximum buoyancy flux:             $(@sprintf("%.2e", buoyancy_flux_parameters.maximum_buoyancy_flux)) m² s⁻³
     Initial mixed layer depth:         $(initial_mixed_layer_depth) m
+    Cooling increasesmping down:       $(prettytime(buoyancy_flux_parameters.start_ramp_down))
     Cooling starts ramping down:       $(prettytime(buoyancy_flux_parameters.start_ramp_down))
     Cooling shuts off:                 $(prettytime(buoyancy_flux_parameters.shut_off))
     Simulation stop time:              $(prettytime(simulation_stop_time))
     Plankton surface growth rate:      $(day * plankton_dynamics_parameters.surface_growth_rate) day⁻¹
     Plankton mortality rate:           $(day * plankton_dynamics_parameters.mortality_rate) day⁻¹
-    Sunlight attenuation length scale: $(plankton_dynamics_parameters.sunlight_attenuation_scale) m
+    Sunlight attenuation length scale: $(plankton_dynamics_parameters.sunlight_attenuation_length) m
 
 """
 
+# Notes about physical parameters:
+#
+# * Taylor and Ferrari (2011) use Qh = {1, 10, 100, 1000}.
+#
+# * Typical reference densities for ocean seawater are somewhat higher than 1000 kg m⁻³.
+#   The average value at the surface of the world ocean is 1026 kg m⁻³ (Roquet et al 2015, Ocean Modelling).
+#
+# * For conservative temperature, cᴾ = 3991 J (ᵒC)⁻¹ m⁻².
+#
+# * (Is a sunlight attenuation length of 5 m reasonable?)
+#
 # Grid
 
 grid = RegularCartesianGrid(size=(Nh, Nh, Nz), extent=(Lh, Lh, Lz))
 
 # Boundary conditions
-delayed_ramp_down(t, start, shutoff) =
-    ifelse(t < start, 1.0,
-    ifelse(t < shutoff, (shutoff - t) / (shutoff - start), 0.0))
+ramp_up_ramp_down(t, plateau, ramp_down, shutoff) =
+    ifelse(t < plateau, t / plateau,
+    ifelse(t < ramp_down, 1.0,
+    ifelse(t < shutoff, (shutoff - t) / (shutoff - ramp_down), 0.0))
 
-buoyancy_flux(x, y, t, θ) = θ.initial_buoyancy_flux * delayed_ramp_down(t, θ.start_ramp_down, θ.shut_off)
+buoyancy_flux(x, y, t, θ) = θ.maximum_buoyancy_flux * ramp_up_ramp_down(t, θ.stop_ramp_up, θ.start_ramp_down, θ.shut_off)
 
 buoyancy_top_bc = BoundaryCondition(Flux, buoyancy_flux, parameters=buoyancy_flux_parameters)
 buoyancy_bot_bc = BoundaryCondition(Gradient, N∞^2)
@@ -89,7 +103,7 @@ buoyancy_bcs = TracerBoundaryConditions(grid, top = buoyancy_top_bc, bottom = bu
 growing_and_grazing(z, P, h, μ₀, m) = (μ₀ * exp(z / h) - m) * P
 
 plankton_forcing_func(x, y, z, t, P, θ) = growing_and_grazing(z, P,
-                                                              θ.sunlight_attenuation_scale,
+                                                              θ.sunlight_attenuation_length,
                                                               θ.surface_growth_rate,
                                                               θ.mortality_rate)
 
@@ -265,7 +279,7 @@ try
                        linewidth = 2,
                           margin = 20pt,
                            label = nothing,
-                           xlims = (-1e-2, 2e-1),
+                           xlims = (-1e-2, 1e-1),
                           ylabel = "z (m)",
                           xlabel = "κᵉᶠᶠ (m² s⁻¹)")
 
@@ -278,7 +292,7 @@ try
                             legend = :bottomleft,
                             xlabel = "Time (days)",
                             ylabel = "Buoyancy flux (m² s⁻³)",
-                             ylims = (0.0, 1.1 * buoyancy_flux_parameters.initial_buoyancy_flux))
+                             ylims = (0.0, 1.1 * buoyancy_flux_parameters.maximum_buoyancy_flux))
 
         plot!(flux_plot, times[1:i] / day, buoyancy_flux_time_series[1:i],
               color = :steelblue,
